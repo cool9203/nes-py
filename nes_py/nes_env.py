@@ -7,9 +7,9 @@ import sys
 import gym
 from gym.spaces import Box
 from gym.spaces import Discrete
+import pygame
 import numpy as np
 from ._rom import ROM
-from ._image_viewer import ImageViewer
 
 
 # the path to the directory this file is in
@@ -85,8 +85,8 @@ class NESEnv(gym.Env):
 
     # relevant meta-data about the environment
     metadata = {
-        'render.modes': ['rgb_array', 'human'],
-        'video.frames_per_second': 60
+        'render_modes': ['rgb_array', 'human'],
+        'render_fps': 60
     }
 
     # the legal range for rewards for this environment
@@ -103,7 +103,7 @@ class NESEnv(gym.Env):
     # action space is a bitmap of button press values for the 8 NES buttons
     action_space = Discrete(256)
 
-    def __init__(self, rom_path):
+    def __init__(self, rom_path, render_mode=None):
         """
         Create a new NES environment.
 
@@ -114,6 +114,7 @@ class NESEnv(gym.Env):
             None
 
         """
+        self.render_mode = render_mode
         # create a ROM file from the ROM path
         rom = ROM(rom_path)
         # check that there is PRG ROM
@@ -149,6 +150,7 @@ class NESEnv(gym.Env):
         self.controllers = [self._controller_buffer(port) for port in range(2)]
         self.screen = self._screen_buffer()
         self.ram = self._ram_buffer()
+        self.clock = None
 
     def _screen_buffer(self):
         """Setup the screen buffer from the C++ code."""
@@ -243,7 +245,7 @@ class NESEnv(gym.Env):
         # return the list of seeds used by RNG(s) in the environment
         return [seed]
 
-    def reset(self, seed=None, options=None, return_info=None):
+    def reset(self, seed=None, options=None):
         """
         Reset the state of the environment and returns an initial observation.
 
@@ -269,8 +271,14 @@ class NESEnv(gym.Env):
         self._did_reset()
         # set the done flag to false
         self.done = False
+        # get info
+        info = self._get_info()
+
+        if self.render_mode == "human":
+            self._render_frame()
+
         # return the screen from the emulator
-        return self.screen
+        return (self.screen, info)
 
     def _did_reset(self):
         """Handle any RAM hacking after a reset occurs."""
@@ -311,8 +319,12 @@ class NESEnv(gym.Env):
             reward = self.reward_range[0]
         elif reward > self.reward_range[1]:
             reward = self.reward_range[1]
+
+        if self.render_mode == "human":
+            self._render_frame()
+
         # return the screen from the emulator and other relevant data
-        return self.screen, reward, self.done, info
+        return self.screen, reward, self.done, False, info
 
     def _get_reward(self):
         """Return the reward after a step occurs."""
@@ -350,9 +362,14 @@ class NESEnv(gym.Env):
         self._env = None
         # if there is an image viewer open, delete it
         if self.viewer is not None:
-            self.viewer.close()
+            pygame.display.quit()
+            pygame.quit()
 
-    def render(self, mode='human'):
+    def render(self):
+        if self.render_mode == "rgb_array":
+            return self._render_frame()
+
+    def _render_frame(self):
         """
         Render the environment.
 
@@ -366,29 +383,26 @@ class NESEnv(gym.Env):
             a numpy array if mode is 'rgb_array', None otherwise
 
         """
-        if mode == 'human':
+        if self.render_mode == 'human':
             # if the viewer isn't setup, import it and create one
             if self.viewer is None:
-                # get the caption for the ImageViewer
-                if self.spec is None:
-                    # if there is no spec, just use the .nes filename
-                    caption = self._rom_path.split('/')[-1]
-                else:
-                    # set the caption to the OpenAI Gym id
-                    caption = self.spec.id
-                # create the ImageViewer to display frames
-                self.viewer = ImageViewer(
-                    caption=caption,
-                    height=SCREEN_HEIGHT,
-                    width=SCREEN_WIDTH,
-                )
+                # init pygame to display frames
+                pygame.init()
+                pygame.display.init()
+                self.viewer = pygame.display.set_mode((SCREEN_HEIGHT, SCREEN_WIDTH))
+            if self.clock is None:
+                self.clock = pygame.time.Clock()
             # show the screen on the image viewer
-            self.viewer.show(self.screen)
-        elif mode == 'rgb_array':
+            canvas = pygame.Surface((SCREEN_HEIGHT, SCREEN_WIDTH))
+            self.viewer.blit(pygame.surfarray.make_surface(np.transpose(self.screen, axes=(1, 0, 2))), canvas.get_rect())
+            pygame.event.pump()
+            pygame.display.update()
+            self.clock.tick(self.metadata["render_fps"])
+        elif self.render_mode == 'rgb_array':
             return self.screen
         else:
             # unpack the modes as comma delineated strings ('a', 'b', ...)
-            render_modes = [repr(x) for x in self.metadata['render.modes']]
+            render_modes = [repr(x) for x in self.metadata['render_modes']]
             msg = 'valid render modes are: {}'.format(', '.join(render_modes))
             raise NotImplementedError(msg)
 
